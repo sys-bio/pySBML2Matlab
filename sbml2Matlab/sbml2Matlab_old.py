@@ -106,19 +106,14 @@ class Sbml2Matlab(object):
         self._readParameters()
         self._readReactions()
         
-        # Avoid underscores
-        if self.model.getModelId() == '__main':
-            self.modelId = 'main'
-        else:
-            self.modelId = self.model.getModelId()
-            
         result  = self.printHeader()
+        result += self.printWrapper()
         result += self.printSpeciesOverview()
         result += self.printOutCompartments()
         result += self.printOutGlobalParameters() 
-        result += self.printOutEventFlags()
         result += self.printOutBoundarySpecies()
         result += self.printInitialConditions()
+        result += self.printModelDetails()
         result += "\nelse\n" # End of if (nargin == 0) block
         result += self.printOutRules()
         result += self.printOutEvents()          
@@ -195,10 +190,10 @@ class Sbml2Matlab(object):
 
         # Read the parameters (including boundary species) and map them to indices
         for i in range (self.model.getNumParameters()): 
-            matlabSymbol = 'gp_' + str (i+1)
+            matlabSymbol = 'rInfo.gp_' + str (i+1)
             self.parameterMap[self.model.getParameterId (i)] = MapElement (i, matlabSymbol)
         for i in range (self.model.getNumBoundarySpecies()):
-            matlabSymbol = 'gp_' + str (i+self.model.getNumParameters()+1)
+            matlabSymbol = 'rInfo.gp_' + str (i+self.model.getNumParameters()+1)
             self.parameterMap[self.model.getNthBoundarySpeciesId (i)] = MapElement (i+self.model.getNumParameters(), matlabSymbol)
 
     # Collection information on each reaction
@@ -211,39 +206,54 @@ class Sbml2Matlab(object):
     # prints the header information on how to use the matlab file
     def printHeader(self):
         result = '' 
-        result += "function xdot = " + self.modelId + "(time,x)\n"
-        result +=  "%  synopsis:\n"
-        result +=  "%     xdot = " + self.modelId + " (time, x)\n"
-        result +=  "%     x0 = " + self.modelId +"\n"
-        result +=  "%\n"
-        result +=  "%  " + self.modelId  + " can be used with the Matlab ode functions as follows:\n%\n"
-        result +=  "%  x0 = " + self.modelId + ";\n"
-        result +=  "%  [t,x] = ode23s(@" + self.modelId + ", [0 100], " + self.modelId + ");\n"
-        result +=  "%  plot (t,x);\n"
-        result +=  "%\n"
-        result +=  "%  where 100 is the end time\n" + "%\n"
-        result +=  "%  When " + self.modelId + " is used without any arguments it returns a vector of\n"
-        result +=  "%  the initial concentrations of the the floating species.\n"
-        result +=  "%  Otherwise " + self.modelId + " should be called with two arguments:\n"
-        result +=  "%  time and x.\n"
-        result +=  "%     time is the current time.\n"
-        result +=  "%     x is the vector of the concentrations of the " + str (self.model.getNumFloatingSpecies ()) + " floating species.\n"
-        result +=  "%  When these parameters are supplied, " + self.modelId + " returns a vector of\n"
-        result +=  "%  the rates of change of the concentrations of the " + str (self.model.getNumFloatingSpecies ()) + " floating species.\n" + "%\n"
+        result += "%  How to use:\n" 
+        result += "%\n"
+        result += "%  " + self.model.getModelId() + " takes 3 inputs and returns 3 outputs.\n"
+        result += "%\n" 
+        result += "%  [t, x, rInfo] = " + self.model.getModelId() + "(tspan,solver,options)\n"
+        result += "%  INPUTS: \n"
+        result += "%  tspan - the time vector for the simulation. It can contain every time point,\n"
+        result += "%  or just the start and end (e.g. [0 1 2 3] or [0 100]).\n"
+        result += "%  solver - the function handle for the odeN solver you wish to use (e.g. @ode23s).\n"
+        result += "%  options - this is the options structure returned from the MATLAB odeset\n"
+        result += "%  function used for setting tolerances and other parameters for the solver.\n"
+        result += "%  \n"
+        result += "%  OUTPUTS: \n"
+        result += "%  t - the time vector that corresponds with the solution. If tspan only contains\n"
+        result += "%  the start and end times, t will contain points spaced out by the solver.\n"
+        result += "%  x - the simulation results\n"
+        result += "%  rInfo - a structure containing information about the model. The fieldn\n"
+        result += "%  within rInfo are \n"
+        result += "%     stoich - the stoichiometry matrix of the model\n"
+        result += "%     floatingSpecies - a cell array containing floating species name, initial\n"
+        result += "%     value, and indicator of the units being inconcentration or amount\n"
+        result += "%     compartments - a cell array containing compartment names and volumes\n"
+        result += "%     params - a cell array containing parameter names and values\n"
+        result += "%     boundarySpecies - a cell array containing boundary species name, initial\n"
+        result += "%     value, and indicator of the units being inconcentration or amount\n"
+        result += "%     rateRules - a cell array containing the names of variables used in a rate rule\n"
+        result += "%\n"
+        result += "%  Sample function call:\n"
+        result += "%     options = odeset('RelTol',1e-12,'AbsTol',1e-9);\n"
+        result += "%     [t, x, rInfo] = model_" + self.model.getModelId () + "(linspace(0,100,100),@ode23s,options);\n"
+        result += "%\n"
 
-        result +=  "%  NOTE for compartmental models the matlab translator\n"
-        result +=  "%  generates code that when simulated in matlab, produces\n"
-        result +=  "%  results which have the units of species amounts. Users\n"
-        result +=  "%  should divide the results for each species with the volume of the\n"
-        result +=  "%  compartment it resides in, in order to obtain concentrations.\n"
-        result +=  "%  \n"
-        
-        result +=  "%  The following table shows the mapping between the vector\n"
-        result +=  "%  index of a floating species and the species name.\n\n" 
-
-        result +=  "%  Indx      Name\n"
         return result
     
+    # prints out the wrapper function for doing assignment and algebraic rules and solving the ode
+    def printWrapper(self):
+    
+        result = "function [t, x, rInfo] = model_" + self.model.getModelId() + "(tspan,solver,options)\n" 
+        result += "\n    % Initialize the model. The function model will\n"
+        result += "    % initailize if the number of arguments is zero\n"
+        result += "    [x, rInfo] = amodel();\n"
+
+        result += "\n    % run simulation\n"
+        result += "\n    [t, x] = feval(solver,@amodel,tspan,x,options);\n"
+
+        result += "\nfunction [x, rInfo] = amodel(time,x)\n"
+        return result
+
     def printSpeciesOverview (self):
         result = ''
         for i in range (self.model.getNumFloatingSpecies()):      
@@ -259,7 +269,8 @@ class Sbml2Matlab(object):
         for i in range (self.model.getNumCompartments ()):
             result += "vol__" + compartmentList[i] + " = " + str (self.model.getCompartmentVolume(i))  + ';\n'
         #   + ";\t\t%"  + compartmentList[i].name + "\n"
-     
+
+        
         return result
 
     # prints out the list of global parameters
@@ -270,7 +281,7 @@ class Sbml2Matlab(object):
        if self.model.getNumParameters() > 0:
             result += "\n% Global Parameters\n"
        for i in range (self.model.getNumParameters()):
-           result +=  "gp_" + str (i+1) + " = " + str (self.model.getParameterValue (i)) + ";\t\t% " \
+           result +=  "rInfo.gp_" + str (i+1) + " = " + str (self.model.getParameterValue (i)) + ";\t\t% " \
               + self.model.getParameterId (i) + '\n'
 
        return result
@@ -311,33 +322,96 @@ class Sbml2Matlab(object):
 
             floatingSpeciesName = self.speciesData[i].speciesId
             bnd_data = ''
-            if self.speciesData[i].isAmount == False:
+            if self.speciesData[i].isAmount == True:
                value = self.speciesData[i].initialAmount
-               bnd_data = "Concentration"
+               bnd_data = "[Amount]"
                strValue = str (value)
             else:
               value = self.speciesData[i].initialConcentration
-              bnd_data = "Amount converted to concentration"
+              bnd_data = "[Concentration]"
               strValue = str (value)
-              strValue = strValue + "/vol__" + self.speciesData[i].compartmentId
+              strValue = strValue + "*vol__" + self.speciesData[i].compartmentId
 
-            result +=  "   xdot(" + str (i+1) + ") = " + strValue  + ";\t% " + floatingSpeciesName \
+            result +=  "   x(" + str (i+1) + ") = " + strValue  + ";\t% " + floatingSpeciesName \
                   + " = " + self.speciesData[i].speciesName + bnd_data + '\n'
             initCondIndex += 1
 
         return result
 
-    # ---------------------------------------------------------
-    # Print out the event flag 
-    def printOutEventFlags (self):
-        result = ''
-        if self.model.getNumEvents():
-           result += '\n% Event flags\n' 
-           for i in range (self.model.getNumEvents()):
-               result += 'T_' + self.model.getEventId (i) + ' = true;\n'
-                  
-        return result           
-            
+    def printModelDetails(self):
+
+        # Printing out stoichiometry matrix
+        result = "\n   % reaction info structure"
+        result += "\n   rInfo.stoich = [\n"
+
+        for i in range (self.model.getNumFloatingSpecies()):
+            eqn = "     "
+
+            floatingSpeciesName = self.speciesData[i].speciesId
+
+            for j in range (self.model.getNumReactions()):
+                numProducts = len (self.reactions[j].products)
+                productStoichiometry = 0
+                reactantStoichiometry = 0
+
+                for k1 in range (numProducts):
+                    productName = self.reactions[j].products[k1].Id
+
+                    if (floatingSpeciesName == productName):
+                        productStoichiometry = productStoichiometry + self.reactions[j].products[k1].value
+
+                numReactants = len (self.reactions[j].reactants)
+                for k1 in range (numReactants):
+                    reactantName = self.reactions[j].reactants[k1].Id;
+                    if (floatingSpeciesName == reactantName):
+                        reactantStoichiometry = reactantStoichiometry + self.reactions[j].reactants[k1].value
+
+                eqn = eqn + " " + str (productStoichiometry - reactantStoichiometry)
+            result += eqn + '\n'
+
+        result += "   ];\n"
+
+        # ---------------------------------------------------------
+        # Printing out species names
+        result += "\n   rInfo.floatingSpecies = {" + "\t% Each row: [Species Name, Initial Value, isAmount (1 for amount, 0 for concentration)]\n"
+
+        for i in range (self.model.getNumFloatingSpecies()):
+
+            isAmount = self.speciesData[i].isAmount
+            speciesId = self.speciesData[i].speciesId
+
+            result += "      '" + speciesId + "', "
+
+            if (isAmount == True):
+               value =  self.speciesData[i].initialAmount
+               valAmount = 1
+            else:
+               value = self.speciesData[i].initialConcentration
+               valAmount = 0
+
+            result += str (value) + ", " + str (valAmount) + '\n'
+
+        result += "   };\n"
+
+        # ---------------------------------------------------------
+        # Printing out compartment names and volume
+        result += "\n   rInfo.compartments = {" + "\t\t% Each row: [Compartment Name, Value]\n"
+
+        for i in range (self.model.getNumCompartments()):
+            result += "      '" + self.model.getCompartmentId(i) \
+                + "', " + str (self.model.getCompartmentVolume(i)) + '\n'
+
+        result += "   };\n"
+
+        # ---------------------------------------------------------
+        # Printing out parameter names and value
+        if self.model.getNumParameters() > 0:
+            result += "\n   rInfo.params = {" + "\t\t% Each row: [Parameter Name, Value]\n"
+            for i in range (self.model.getNumParameters()):       
+                result +=  "      '" + self.model.getParameterId (i)+ "', "
+                result += str (self.model.getParameterValue(i)) + '\n'
+            result += "   };\n"
+
         # ---------------------------------------------------------
         # printing out boundary species
         if self.model.getNumBoundarySpecies() > 0:
@@ -406,18 +480,6 @@ class Sbml2Matlab(object):
         
     def printOutEvents(self):
         result = ''
-        if self.model.getNumEvents() > 0:
-           for i in range (self.model.getNumEvents ()):
-               rightside = subsituteConstants(self, self.model.getEventTrigger (i), '', False) 
-               triggerId = 'trigger' + self.model.getEventId(i)
-               result += '   ' + triggerId + ' = ' + rightside + ';\n'
-               result += '   if T_' + self.model.getEventId(i) + ' && ' + triggerId + '\n'
-               for j in range (self.model.getNumEventAssignments (i)):
-                   result += '      '
-                   result += subsituteConstants(self, self.model.getEventVariable (i, j), '', False) + ' = '
-                   result += subsituteConstants(self, self.model.getEventAssignment (i, j), '', False) + ';\n'
-                   result += '      T_' + self.model.getEventId(i) + '= false;\n'
-               result += '   end;\n'
         return result
             
     def printRatesOfChange(self):
@@ -525,7 +587,7 @@ import tellurium as te
 # S3 + S5 -> S1; k7*S3*S5;
 # S1 -> $S4 + S4; k8*S1;
 
-# S0 = 1; S1 = 1; S2 = 1; S3 = 1; S4 = 2; S5 = 1;
+# S0 = 0; S1 = 0; S2 = 0; S3 = 0; S4 = 0; S5 = 0;
 # k0 = 0.30242636485498864
 # k1 = 0.4546338198517117
 # k2 = 0.14781881391817286
@@ -543,32 +605,12 @@ import tellurium as te
 # print (m.convert())
 
 
-# r = te.loada("""  
-#    k1 := 2*sin (time*5) + 2
-#    S1 -> S2; k1*S1;
-   
-#    S1 = 5; S2 = 0; 
-# """)
-
-# m = r.simulate (0, 10, 100, ['time', 'S1', 'k1'])
-# r.plot()
-
-# m = Sbml2Matlab(r.getSBML())
-# print (m.convert())
-
-
-r = te.loada("""  
+r = te.loada("""
    S1 -> S2; k1*S1;
    
-   at time > 20: k1 = 0.8
-   at time > 10: k1 = 0.5
-
-   S1 = 5; S2 = 0; k1 = 0.1 
+   S1 = 5; S2 = 0; k1 = 0.1; 
 """)
 
 m = Sbml2Matlab(r.getSBML())
 print (m.convert())
-
-#m = r.simulate (0, 30, 100, ['time', 'S1', 'k1'])
-#r.plot()
 
